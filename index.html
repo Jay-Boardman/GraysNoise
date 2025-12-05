@@ -119,7 +119,7 @@
             const store = tx.objectStore(STORE_NAME);
             const request = store.getAll();
             request.onsuccess = () => {
-              const sounds = request.result.map(item => ({
+              const sounds = (request.result || []).map(item => ({
                 ...item,
                 url: URL.createObjectURL(item.blob) // Recreate URL from stored blob
               }));
@@ -154,7 +154,6 @@
           const tx = db.transaction(STORE_NAME, 'readwrite');
           const store = tx.objectStore(STORE_NAME);
           
-          // We need to get the record, update name, then put it back
           const getReq = store.get(id);
           getReq.onsuccess = () => {
              const data = getReq.result;
@@ -263,6 +262,16 @@
         const [editName, setEditName] = useState(sound.name);
         const inputRef = useRef(null);
 
+        // Force load on mount/update to ensure audio element is ready (Critical for iOS persistence)
+        useEffect(() => {
+          if (audioRef.current) {
+            audioRef.current.load();
+            setError(false);
+            setActive(false);
+            setProgress(0);
+          }
+        }, [sound.url]);
+
         const playSound = () => {
           if (error || isEditing) return; 
           
@@ -308,8 +317,8 @@
             setProgress(0);
           };
 
-          const handleError = () => {
-            console.warn(`Error loading sound: ${sound.name}`);
+          const handleError = (e) => {
+            console.warn(`Error loading sound: ${sound.name}`, e);
             setError(true);
             setActive(false);
           };
