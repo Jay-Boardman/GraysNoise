@@ -95,7 +95,6 @@
       const saveSoundToDB = async (sound) => {
         try {
           const db = await initDB();
-          // Fetch the blob from the blobURL to store it
           const response = await fetch(sound.url);
           const blob = await response.blob();
           
@@ -252,7 +251,10 @@
       // --- Components ---
 
       const SoundButton = ({ sound, stopSignal, onDelete, onRename }) => {
-        const audioRef = useRef(null);
+        // We use a ref to hold the Audio object so we can control it (pause/stop)
+        // independent of the react render cycle.
+        const audioInstance = useRef(null);
+        
         const [active, setActive] = useState(false);
         const [error, setError] = useState(false);
         const [progress, setProgress] = useState(0);
@@ -262,77 +264,69 @@
         const [editName, setEditName] = useState(sound.name);
         const inputRef = useRef(null);
 
-        // Force load on mount/update to ensure audio element is ready (Critical for iOS persistence)
+        // Cleanup on unmount
         useEffect(() => {
-          if (audioRef.current) {
-            audioRef.current.load();
-            setError(false);
-            setActive(false);
-            setProgress(0);
-          }
-        }, [sound.url]);
+          return () => {
+            if (audioInstance.current) {
+              audioInstance.current.pause();
+              audioInstance.current = null;
+            }
+          };
+        }, []);
 
         const playSound = () => {
           if (error || isEditing) return; 
           
-          if (audioRef.current) {
-            audioRef.current.currentTime = 0;
-            const playPromise = audioRef.current.play();
-            
-            if (playPromise !== undefined) {
-              playPromise
-                .then(() => {
-                  setActive(true);
-                  setError(false);
-                })
-                .catch((err) => {
-                  console.error("Playback failed:", err);
-                });
-            }
+          // Stop any currently playing instance for this button
+          if (audioInstance.current) {
+            audioInstance.current.pause();
+            audioInstance.current.currentTime = 0;
           }
+
+          // Create a new Audio instance.
+          // This "fresh" creation inside a user event handler is critical for iOS.
+          const audio = new Audio(sound.url);
+          audioInstance.current = audio;
+
+          // Attach listeners
+          audio.onplay = () => {
+             setActive(true);
+             setError(false);
+          };
+          
+          audio.onended = () => {
+             setActive(false);
+             setProgress(0);
+          };
+
+          audio.onerror = (e) => {
+             console.warn("Audio playback error", e);
+             setError(true);
+             setActive(false);
+          };
+
+          audio.ontimeupdate = () => {
+             if (audio.duration) {
+                setProgress((audio.currentTime / audio.duration) * 100);
+             }
+          };
+
+          // Attempt playback
+          audio.play().catch(err => {
+             console.error("Playback failed:", err);
+             // Don't show error immediately as sometimes it's just an interruption
+          });
         };
 
         // Handle global stop signal
         useEffect(() => {
-          if (stopSignal > 0 && audioRef.current) {
-            audioRef.current.pause();
-            audioRef.current.currentTime = 0;
+          if (stopSignal > 0 && audioInstance.current) {
+            audioInstance.current.pause();
+            audioInstance.current.currentTime = 0;
             setActive(false);
             setProgress(0);
           }
         }, [stopSignal]);
-
-        useEffect(() => {
-          const audio = audioRef.current;
-          if (!audio) return;
-
-          const handleTimeUpdate = () => {
-            if (audio.duration) {
-              setProgress((audio.currentTime / audio.duration) * 100);
-            }
-          };
-
-          const handleEnded = () => {
-            setActive(false);
-            setProgress(0);
-          };
-
-          const handleError = (e) => {
-            console.warn(`Error loading sound: ${sound.name}`, e);
-            setError(true);
-            setActive(false);
-          };
-
-          audio.addEventListener('timeupdate', handleTimeUpdate);
-          audio.addEventListener('ended', handleEnded);
-          audio.addEventListener('error', handleError);
-
-          return () => {
-            audio.removeEventListener('timeupdate', handleTimeUpdate);
-            audio.removeEventListener('ended', handleEnded);
-            audio.removeEventListener('error', handleError);
-          };
-        }, [sound.name, sound.url]);
 
         // Focus input when editing starts
         useEffect(() => {
@@ -386,18 +380,6 @@
 
         return (
           <div className="relative group no-select z-0">
-            {/* 
-              Use `key={sound.url}` to force React to remount the audio element 
-              when the URL changes (e.g., from DB reload). This fixes iOS stale audio issues.
-            */}
-            <audio 
-              key={sound.url} 
-              ref={audioRef} 
-              src={sound.url} 
-              preload="auto" 
-              playsInline 
-            />
-            
             <button
               onClick={playSound}
               disabled={error}
