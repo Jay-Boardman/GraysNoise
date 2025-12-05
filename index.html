@@ -78,7 +78,7 @@
 
       // --- IndexedDB Logic ---
       const DB_NAME = 'GraysNoiseDB';
-      const DB_VERSION = 3; // Version 3 to ensure clean schema
+      const DB_VERSION = 4; // Version 4 for Blob storage schema
       const STORE_NAME = 'custom_sounds';
 
       const initDB = () => {
@@ -86,33 +86,29 @@
           const request = indexedDB.open(DB_NAME, DB_VERSION);
           request.onupgradeneeded = (event) => {
             const db = event.target.result;
-            if (!db.objectStoreNames.contains(STORE_NAME)) {
-              db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+            if (db.objectStoreNames.contains(STORE_NAME)) {
+               db.deleteObjectStore(STORE_NAME); // Clean slate for new schema
             }
+            db.createObjectStore(STORE_NAME, { keyPath: 'id' });
           };
           request.onsuccess = (event) => resolve(event.target.result);
           request.onerror = (event) => reject(event.target.error);
         });
       };
 
-      // Helper to convert Blob/File -> Base64 Data URI
-      // This is crucial for saving audio data permanently in IndexedDB
-      const blobToDataURL = (blob) => {
-        return new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result);
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        });
-      };
-
-      const saveSoundToDB = async (sound) => {
+      // We now store the Blob directly. 
+      // Browsers support storing Blobs in IndexedDB.
+      // On load, we create a fresh URL.createObjectURL(blob).
+      const saveSoundToDB = async (soundWithBlob) => {
         try {
           const db = await initDB();
           return new Promise((resolve, reject) => {
             const tx = db.transaction(STORE_NAME, 'readwrite');
             const store = tx.objectStore(STORE_NAME);
-            store.put(sound); 
+            // We store the Blob object itself, not a string URL
+            const { url, ...soundData } = soundWithBlob; 
+            // soundData should contain 'blob' property
+            store.put(soundData); 
             tx.oncomplete = () => resolve();
             tx.onerror = () => reject(tx.error);
           });
@@ -128,7 +124,17 @@
             const tx = db.transaction(STORE_NAME, 'readonly');
             const store = tx.objectStore(STORE_NAME);
             const request = store.getAll();
-            request.onsuccess = () => resolve(request.result || []);
+            request.onsuccess = () => {
+               const sounds = request.result || [];
+               // Rehydrate blobs into URLs for this session
+               const hydratedSounds = sounds.map(s => {
+                  if (s.blob instanceof Blob) {
+                     return { ...s, url: URL.createObjectURL(s.blob) };
+                  }
+                  return s;
+               });
+               resolve(hydratedSounds);
+            };
             request.onerror = () => reject(request.error);
           });
         } catch (e) {
@@ -203,10 +209,10 @@
         },
         {
           id: 's4',
-          name: 'Whip Crack',
-          url: 'https://www.myinstants.com/media/sounds/whip.mp3',
+          name: 'Discord Join',
+          url: 'https://www.myinstants.com/media/sounds/discord-join.mp3',
           type: SoundType.PRELOADED,
-          color: 'amber'
+          color: 'blue'
         },
         {
           id: 's5',
@@ -217,8 +223,8 @@
         },
         {
           id: 's6',
-          name: 'Spongebob',
-          url: 'https://www.myinstants.com/media/sounds/spongebob-fail.mp3', 
+          name: 'Rimshot',
+          url: 'https://www.myinstants.com/media/sounds/rimshot.mp3', 
           type: SoundType.PRELOADED,
           color: 'rose'
         },
@@ -231,17 +237,17 @@
         },
         {
           id: 's8',
-          name: 'Wet Fart',
-          url: 'https://www.myinstants.com/media/sounds/wet-fart_1.mp3',
+          name: 'Error',
+          url: 'https://www.myinstants.com/media/sounds/error.mp3',
           type: SoundType.PRELOADED,
-          color: 'orange'
+          color: 'teal'
         },
         {
           id: 's9',
           name: 'Cricket',
           url: 'https://www.myinstants.com/media/sounds/cricket.mp3',
           type: SoundType.PRELOADED,
-          color: 'teal'
+          color: 'amber'
         },
         {
           id: 's10',
@@ -284,6 +290,7 @@
 
           try {
             // Using new Audio() inside the click handler is the most reliable way to play sound on iOS
+            // We use the sound.url which is either a remote URL or a blob: URL for this session
             const audio = new Audio(sound.url);
             audioInstance.current = audio;
 
@@ -301,7 +308,7 @@
             };
 
             audio.onerror = (e) => {
-              console.warn("Audio playback error", e);
+              console.warn("Audio playback error", e, sound.url);
               setError(true);
               setActive(false);
             };
@@ -490,7 +497,8 @@
           try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             
-            // Prefer mp4 for iOS compatibility
+            // Critical for iOS: Prefer mp4/aac. 
+            // If we default to webm, iOS might record it but fail to play it back reliably from a Blob
             let mimeType = 'audio/webm';
             if (MediaRecorder.isTypeSupported('audio/mp4')) {
               mimeType = 'audio/mp4';
@@ -511,7 +519,7 @@
               const url = URL.createObjectURL(blob); // Temp URL for immediate feedback
               const name = `Rec ${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}`;
               
-              // Pass the BLOB so it can be converted to Base64 in App
+              // Pass the BLOB so it can be stored in DB
               onRecordingComplete(url, name, blob); 
               
               stream.getTracks().forEach(track => track.stop());
@@ -604,7 +612,7 @@
               onClick={() => fileInputRef.current?.click()}
               className="flex items-center gap-3 px-6 py-3 rounded-full font-bold tracking-wider uppercase bg-slate-800 border border-slate-700 hover:bg-slate-700 hover:border-fuchsia-400 text-slate-300 hover:text-fuchsia-400 transition-all"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-3">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
               </svg>
               Upload
@@ -625,33 +633,34 @@
         }, []);
 
         const handleAddSound = async (tempUrl, name, type, blob) => {
-          let persistentUrl = tempUrl;
+          const newId = `custom-${Date.now()}`;
           
-          // CONVERT BLOB TO BASE64 STRING FOR PERSISTENCE
-          if (blob) {
-            try {
-               // This function must exist now!
-               persistentUrl = await blobToDataURL(blob);
-            } catch (e) {
-               console.error("Failed to convert blob to base64", e);
-            }
-          }
-
           const newSound = {
-            id: `custom-${Date.now()}`,
+            id: newId,
             name: name || 'Custom Sound',
-            url: persistentUrl, // This will be a long 'data:audio/...' string
+            url: tempUrl, // Temporary URL for immediate feedback
             type,
-            color: type === SoundType.RECORDED ? 'red' : 'blue'
+            color: type === SoundType.RECORDED ? 'red' : 'blue',
+            blob: blob // Store blob in state for now, will be saved to DB
           };
           
-          await saveSoundToDB(newSound);
+          // Save the entire sound object (including blob) to DB
+          if (blob) {
+            await saveSoundToDB(newSound);
+          }
+          
           setSounds(prev => [...prev, newSound]);
         };
 
         const handleDeleteSound = async (id) => {
            await deleteSoundFromDB(id);
-           setSounds(prev => prev.filter(s => s.id !== id));
+           setSounds(prev => {
+             const sound = prev.find(s => s.id === id);
+             if (sound && sound.url && sound.url.startsWith('blob:')) {
+               URL.revokeObjectURL(sound.url);
+             }
+             return prev.filter(s => s.id !== id);
+           });
         };
 
         const handleRenameSound = async (id, newName) => {
@@ -748,3 +757,4 @@
     </script>
   </body>
 </html>
+    
