@@ -29,38 +29,23 @@
         color: #e2e8f0;
         -webkit-tap-highlight-color: transparent;
         touch-action: manipulation;
-        overscroll-behavior-y: none; /* Prevent rubber-banding on iOS */
+        overscroll-behavior-y: none;
       }
       h1, h2, h3, .brand-font {
         font-family: 'Orbitron', sans-serif;
       }
-      /* Custom Scrollbar */
-      ::-webkit-scrollbar {
-        width: 8px;
-      }
-      ::-webkit-scrollbar-track {
-        background: #0f172a; 
-      }
-      ::-webkit-scrollbar-thumb {
-        background: #334155; 
-        border-radius: 4px;
-      }
-      ::-webkit-scrollbar-thumb:hover {
-        background: #475569; 
-      }
+      ::-webkit-scrollbar { width: 8px; }
+      ::-webkit-scrollbar-track { background: #0f172a; }
+      ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
       .glass-panel {
         background: rgba(15, 23, 42, 0.6);
         backdrop-filter: blur(12px);
         -webkit-backdrop-filter: blur(12px);
         border: 1px solid rgba(148, 163, 184, 0.1);
       }
-      /* Prevent text selection during rapid clicking */
-      .no-select {
-        user-select: none;
-        -webkit-user-select: none;
-      }
+      .no-select { user-select: none; -webkit-user-select: none; }
     </style>
-<script type="importmap">
+  <script type="importmap">
 {
   "imports": {
     "react": "https://aistudiocdn.com/react@^19.2.1",
@@ -78,7 +63,7 @@
 
       // --- IndexedDB Logic ---
       const DB_NAME = 'GraysNoiseDB';
-      const DB_VERSION = 4; // Version 4 for Blob storage schema
+      const DB_VERSION = 5; // Bumped version to force clean slate with new schema
       const STORE_NAME = 'custom_sounds';
 
       const initDB = () => {
@@ -87,7 +72,7 @@
           request.onupgradeneeded = (event) => {
             const db = event.target.result;
             if (db.objectStoreNames.contains(STORE_NAME)) {
-               db.deleteObjectStore(STORE_NAME); // Clean slate for new schema
+               db.deleteObjectStore(STORE_NAME);
             }
             db.createObjectStore(STORE_NAME, { keyPath: 'id' });
           };
@@ -96,24 +81,30 @@
         });
       };
 
-      // We now store the Blob directly. 
-      // Browsers support storing Blobs in IndexedDB.
-      // On load, we create a fresh URL.createObjectURL(blob).
-      const saveSoundToDB = async (soundWithBlob) => {
+      const saveSoundToDB = async (soundObj) => {
         try {
           const db = await initDB();
           return new Promise((resolve, reject) => {
             const tx = db.transaction(STORE_NAME, 'readwrite');
             const store = tx.objectStore(STORE_NAME);
-            // We store the Blob object itself, not a string URL
-            const { url, ...soundData } = soundWithBlob; 
-            // soundData should contain 'blob' property
-            store.put(soundData); 
+            
+            // Create a clean object to store
+            // IMPORTANT: We store the mimeType explicitly to help iOS reconstruct it later
+            const record = {
+              id: soundObj.id,
+              name: soundObj.name,
+              type: soundObj.type,
+              color: soundObj.color,
+              blob: soundObj.blob,
+              mimeType: soundObj.blob.type || 'audio/mp4' // Fallback
+            };
+            
+            store.put(record);
             tx.oncomplete = () => resolve();
             tx.onerror = () => reject(tx.error);
           });
         } catch (e) {
-          console.error("Failed to save to DB", e);
+          console.error("DB Save Error", e);
         }
       };
 
@@ -125,20 +116,26 @@
             const store = tx.objectStore(STORE_NAME);
             const request = store.getAll();
             request.onsuccess = () => {
-               const sounds = request.result || [];
-               // Rehydrate blobs into URLs for this session
-               const hydratedSounds = sounds.map(s => {
-                  if (s.blob instanceof Blob) {
-                     return { ...s, url: URL.createObjectURL(s.blob) };
+               const records = request.result || [];
+               // Rehydrate: Convert stored Blobs back into playable URLs
+               const sounds = records.map(rec => {
+                  if (rec.blob instanceof Blob) {
+                     // iOS Fix: Explicitly recreate Blob with the correct MIME type
+                     // This prevents the browser from treating it as generic binary data
+                     const safeBlob = new Blob([rec.blob], { type: rec.mimeType || 'audio/mp4' });
+                     return { 
+                       ...rec, 
+                       url: URL.createObjectURL(safeBlob) 
+                     };
                   }
-                  return s;
+                  return rec;
                });
-               resolve(hydratedSounds);
+               resolve(sounds);
             };
             request.onerror = () => reject(request.error);
           });
         } catch (e) {
-          console.error("Failed to load from DB", e);
+          console.error("DB Load Error", e);
           return [];
         }
       };
@@ -146,15 +143,13 @@
       const deleteSoundFromDB = async (id) => {
         try {
           const db = await initDB();
-          return new Promise((resolve, reject) => {
-            const tx = db.transaction(STORE_NAME, 'readwrite');
-            const store = tx.objectStore(STORE_NAME);
-            store.delete(id);
-            tx.oncomplete = () => resolve();
-            tx.onerror = () => reject(tx.error);
+          const tx = db.transaction(STORE_NAME, 'readwrite');
+          tx.objectStore(STORE_NAME).delete(id);
+          return new Promise(resolve => {
+             tx.oncomplete = () => resolve();
           });
         } catch (e) {
-          console.error("Failed to delete from DB", e);
+          console.error("DB Delete Error", e);
         }
       };
 
@@ -165,193 +160,91 @@
           const store = tx.objectStore(STORE_NAME);
           const getReq = store.get(id);
           getReq.onsuccess = () => {
-             const data = getReq.result;
-             if (data) {
+             if (getReq.result) {
+                const data = getReq.result;
                 data.name = newName;
                 store.put(data);
              }
           };
-        } catch (e) {
-          console.error("Failed to update DB", e);
-        }
-      };
-
-
-      // --- Types ---
-      const SoundType = {
-        PRELOADED: 'PRELOADED',
-        RECORDED: 'RECORDED',
-        UPLOADED: 'UPLOADED'
+        } catch (e) {}
       };
 
       // --- Constants ---
+      const SoundType = { PRELOADED: 'PRELOADED', RECORDED: 'RECORDED', UPLOADED: 'UPLOADED' };
+
       const PRELOADED_SOUNDS = [
-        {
-          id: 's1',
-          name: 'Vine Boom',
-          url: 'https://www.myinstants.com/media/sounds/vine-boom.mp3',
-          type: SoundType.PRELOADED,
-          color: 'cyan'
-        },
-        {
-          id: 's2',
-          name: 'Airhorn',
-          url: 'https://www.myinstants.com/media/sounds/air-horn-club-sample_1.mp3',
-          type: SoundType.PRELOADED,
-          color: 'fuchsia'
-        },
-        {
-          id: 's3',
-          name: 'Anime Wow',
-          url: 'https://www.myinstants.com/media/sounds/anime-wow-sound-effect.mp3',
-          type: SoundType.PRELOADED,
-          color: 'lime'
-        },
-        {
-          id: 's4',
-          name: 'Discord Join',
-          url: 'https://www.myinstants.com/media/sounds/discord-join.mp3',
-          type: SoundType.PRELOADED,
-          color: 'blue'
-        },
-        {
-          id: 's5',
-          name: 'Cartoon Boing',
-          url: 'https://www.myinstants.com/media/sounds/boing.mp3',
-          type: SoundType.PRELOADED,
-          color: 'violet'
-        },
-        {
-          id: 's6',
-          name: 'Rimshot',
-          url: 'https://www.myinstants.com/media/sounds/rimshot.mp3', 
-          type: SoundType.PRELOADED,
-          color: 'rose'
-        },
-        {
-          id: 's7',
-          name: 'Roblox Oof',
-          url: 'https://www.myinstants.com/media/sounds/roblox-death-sound_1.mp3',
-          type: SoundType.PRELOADED,
-          color: 'red'
-        },
-        {
-          id: 's8',
-          name: 'Error',
-          url: 'https://www.myinstants.com/media/sounds/error.mp3',
-          type: SoundType.PRELOADED,
-          color: 'teal'
-        },
-        {
-          id: 's9',
-          name: 'Cricket',
-          url: 'https://www.myinstants.com/media/sounds/cricket.mp3',
-          type: SoundType.PRELOADED,
-          color: 'amber'
-        },
-        {
-          id: 's10',
-          name: 'Victory',
-          url: 'https://www.myinstants.com/media/sounds/tada.mp3',
-          type: SoundType.PRELOADED,
-          color: 'emerald'
-        }
+        { id: 's1', name: 'Vine Boom', url: 'https://www.myinstants.com/media/sounds/vine-boom.mp3', type: SoundType.PRELOADED, color: 'cyan' },
+        { id: 's2', name: 'Airhorn', url: 'https://www.myinstants.com/media/sounds/air-horn-club-sample_1.mp3', type: SoundType.PRELOADED, color: 'fuchsia' },
+        { id: 's3', name: 'Anime Wow', url: 'https://www.myinstants.com/media/sounds/anime-wow-sound-effect.mp3', type: SoundType.PRELOADED, color: 'lime' },
+        { id: 's4', name: 'Whip Crack', url: 'https://www.myinstants.com/media/sounds/whipped.mp3', type: SoundType.PRELOADED, color: 'blue' },
+        { id: 's5', name: 'Cartoon Boing', url: 'https://www.myinstants.com/media/sounds/boing.mp3', type: SoundType.PRELOADED, color: 'violet' },
+        { id: 's6', name: 'Spongebob', url: 'https://www.myinstants.com/media/sounds/spongebob-fail.mp3', type: SoundType.PRELOADED, color: 'rose' },
+        { id: 's7', name: 'Roblox Oof', url: 'https://www.myinstants.com/media/sounds/roblox-death-sound_1.mp3', type: SoundType.PRELOADED, color: 'red' },
+        { id: 's8', name: 'Wet Fart', url: 'https://www.myinstants.com/media/sounds/wet-fart_1.mp3', type: SoundType.PRELOADED, color: 'teal' },
+        { id: 's9', name: 'Cricket', url: 'https://www.myinstants.com/media/sounds/cricket.mp3', type: SoundType.PRELOADED, color: 'amber' },
+        { id: 's10', name: 'Victory', url: 'https://www.myinstants.com/media/sounds/tada.mp3', type: SoundType.PRELOADED, color: 'emerald' }
       ];
 
-      // --- Components ---
-
+      // --- SoundButton Component ---
       const SoundButton = ({ sound, stopSignal, onDelete, onRename }) => {
-        const audioInstance = useRef(null);
-        
         const [active, setActive] = useState(false);
         const [error, setError] = useState(false);
         const [progress, setProgress] = useState(0);
         const [isEditing, setIsEditing] = useState(false);
         const [editName, setEditName] = useState(sound.name);
+        
+        const audioRef = useRef(null);
         const inputRef = useRef(null);
 
+        // Global Stop
         useEffect(() => {
-          return () => {
-            if (audioInstance.current) {
-              audioInstance.current.pause();
-              audioInstance.current = null;
-            }
-          };
-        }, []);
-
-        const playSound = () => {
-          if (error || isEditing) return; 
-          
-          if (audioInstance.current) {
-            audioInstance.current.pause();
-            audioInstance.current.currentTime = 0;
-            audioInstance.current = null;
-          }
-
-          try {
-            // Using new Audio() inside the click handler is the most reliable way to play sound on iOS
-            // We use the sound.url which is either a remote URL or a blob: URL for this session
-            const audio = new Audio(sound.url);
-            audioInstance.current = audio;
-
-            // iOS sometimes needs this hint
-            audio.load();
-
-            audio.onplay = () => {
-              setActive(true);
-              setError(false);
-            };
-            
-            audio.onended = () => {
-              setActive(false);
-              setProgress(0);
-            };
-
-            audio.onerror = (e) => {
-              console.warn("Audio playback error", e, sound.url);
-              setError(true);
-              setActive(false);
-            };
-
-            audio.ontimeupdate = () => {
-              if (audio.duration) {
-                  setProgress((audio.currentTime / audio.duration) * 100);
-              }
-            };
-
-            const playPromise = audio.play();
-            if (playPromise !== undefined) {
-              playPromise.catch(err => {
-                  console.error("Play prevented:", err);
-                  // Sometimes rapid clicks cause an AbortError, which is fine to ignore visually
-                  if (err.name !== 'AbortError') {
-                    // Only show visual error for real failures
-                  }
-              });
-            }
-          } catch (e) {
-            console.error("Failed to construct audio:", e);
-            setError(true);
-          }
-        };
-
-        useEffect(() => {
-          if (stopSignal > 0 && audioInstance.current) {
-            audioInstance.current.pause();
-            audioInstance.current.currentTime = 0;
+          if (stopSignal > 0 && audioRef.current) {
+            audioRef.current.pause();
+            audioRef.current.currentTime = 0;
             setActive(false);
             setProgress(0);
           }
         }, [stopSignal]);
 
-        useEffect(() => {
-          if (isEditing && inputRef.current) {
-            inputRef.current.focus();
+        // Play Logic
+        const playSound = async () => {
+          if (error || isEditing) return;
+
+          // cleanup previous
+          if (audioRef.current) {
+            audioRef.current.pause();
+            audioRef.current = null;
           }
-        }, [isEditing]);
+
+          try {
+            // New Audio instance every time for reliability on iOS
+            const audio = new Audio(sound.url);
+            audioRef.current = audio;
+            
+            // Critical for iOS Safari:
+            // Explicitly load() to tell the browser this is a new intentional interaction
+            audio.load();
+
+            audio.onplay = () => { setActive(true); setError(false); };
+            audio.onended = () => { setActive(false); setProgress(0); };
+            audio.ontimeupdate = () => {
+              if (audio.duration) setProgress((audio.currentTime / audio.duration) * 100);
+            };
+            audio.onerror = (e) => {
+              console.error("Audio Error:", e, sound.url);
+              setError(true);
+              setActive(false);
+            };
+
+            await audio.play();
+          } catch (e) {
+            console.error("Playback failed", e);
+            // Sometimes it's just an AbortError from rapid clicking, which is safe to ignore
+          }
+        };
 
         const handleSaveRename = (e) => {
-          if (e) e.stopPropagation();
+          if(e) e.stopPropagation();
           if (onRename && editName.trim()) {
               onRename(sound.id, editName.trim());
               setIsEditing(false);
@@ -361,38 +254,26 @@
           }
         };
 
-        const handleKeyDown = (e) => {
-          if (e.key === 'Enter') handleSaveRename();
-          else if (e.key === 'Escape') {
-              setEditName(sound.name);
-              setIsEditing(false);
-          }
-          e.stopPropagation();
-        };
-
-        const getColors = (colorName) => {
-          const colors = {
+        const getColors = (c) => {
+           const map = {
             cyan: 'border-cyan-500 shadow-cyan-500/50 hover:bg-cyan-500/10 text-cyan-400',
             fuchsia: 'border-fuchsia-500 shadow-fuchsia-500/50 hover:bg-fuchsia-500/10 text-fuchsia-400',
             lime: 'border-lime-500 shadow-lime-500/50 hover:bg-lime-500/10 text-lime-400',
-            orange: 'border-orange-500 shadow-orange-500/50 hover:bg-orange-500/10 text-orange-400',
+            blue: 'border-blue-500 shadow-blue-500/50 hover:bg-blue-500/10 text-blue-400',
             violet: 'border-violet-500 shadow-violet-500/50 hover:bg-violet-500/10 text-violet-400',
             rose: 'border-rose-500 shadow-rose-500/50 hover:bg-rose-500/10 text-rose-400',
             red: 'border-red-500 shadow-red-500/50 hover:bg-red-500/10 text-red-400',
             teal: 'border-teal-500 shadow-teal-500/50 hover:bg-teal-500/10 text-teal-400',
             amber: 'border-amber-500 shadow-amber-500/50 hover:bg-amber-500/10 text-amber-400',
             emerald: 'border-emerald-500 shadow-emerald-500/50 hover:bg-emerald-500/10 text-emerald-400',
-            blue: 'border-blue-500 shadow-blue-500/50 hover:bg-blue-500/10 text-blue-400',
-          };
-          return colors[colorName] || colors['cyan'];
+           };
+           return map[c] || map['cyan'];
         };
 
-        const themeClass = error 
-          ? 'border-red-900/50 text-red-700 cursor-not-allowed bg-red-900/10' 
-          : getColors(sound.color);
+        const themeClass = error ? 'border-red-900/50 text-red-700 bg-red-900/10' : getColors(sound.color);
 
         return (
-          <div className="relative group no-select z-0">
+          <div className="relative group no-select">
             <button
               onClick={playSound}
               disabled={error}
@@ -405,34 +286,26 @@
               `}
             >
               {active && (
-                 <div 
-                   className="absolute bottom-0 left-0 h-1 bg-current opacity-70 transition-all duration-100"
-                   style={{ width: `${progress}%` }}
-                 />
+                 <div className="absolute bottom-0 left-0 h-1 bg-current opacity-70 transition-all duration-100" style={{ width: `${progress}%` }} />
               )}
 
               <div className={`text-3xl mb-2 transition-transform duration-200 ${active ? 'scale-110' : ''}`}>
                  {error ? (
-                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-8 h-8 opacity-50">
-                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
-                   </svg>
+                   <svg className="w-8 h-8 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" /></svg>
                  ) : (
-                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-8 h-8">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
-                    </svg>
+                   <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" /></svg>
                  )}
               </div>
               
               {isEditing ? (
                  <input 
-                    ref={inputRef}
-                    type="text"
-                    value={editName}
+                    ref={inputRef} type="text" value={editName}
                     onChange={(e) => setEditName(e.target.value)}
-                    onKeyDown={handleKeyDown}
+                    onKeyDown={(e) => { if(e.key==='Enter') handleSaveRename(); if(e.key==='Escape') setIsEditing(false); e.stopPropagation(); }}
                     onClick={(e) => e.stopPropagation()}
                     onBlur={() => handleSaveRename()}
                     className="w-full text-xs sm:text-sm font-medium text-center bg-slate-950/80 text-white rounded px-1 py-0.5 outline-none border border-cyan-500 z-30 shadow-lg"
+                    autoFocus
                  />
               ) : (
                 <span className="text-xs sm:text-sm font-medium tracking-wider uppercase truncate max-w-full brand-font">
@@ -441,38 +314,25 @@
               )}
             </button>
 
-            {/* Edit/Delete Icons - Positioned OUTSIDE the button to handle clicks reliably */}
+            {/* EDIT & DELETE BUTTONS - Outside the main button click area */}
             {(onDelete || onRename) && !isEditing && (
               <div className="absolute top-2 right-2 flex gap-1 z-20">
                 {onRename && (
                   <button 
                     type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      e.preventDefault();
-                      setIsEditing(true);
-                      setEditName(sound.name);
-                    }}
-                    className="p-1.5 bg-slate-900/60 hover:bg-slate-700 rounded-full cursor-pointer text-slate-400 hover:text-cyan-400 backdrop-blur-md transition-colors shadow-md border border-slate-700/50"
+                    onClick={(e) => { e.stopPropagation(); setIsEditing(true); setEditName(sound.name); }}
+                    className="p-1.5 bg-slate-900/80 hover:bg-slate-700 rounded-full cursor-pointer text-slate-400 hover:text-cyan-400 backdrop-blur-md transition-colors shadow-md border border-slate-700/50"
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-3.5 h-3.5">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487zm0 0L19.5 7.125" />
-                    </svg>
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487zm0 0L19.5 7.125" /></svg>
                   </button>
                 )}
                 {onDelete && (
                   <button 
                     type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      e.preventDefault();
-                      onDelete(sound.id);
-                    }}
-                    className="p-2 bg-slate-900/60 hover:bg-red-500/20 rounded-full cursor-pointer text-slate-400 hover:text-red-400 backdrop-blur-md transition-colors shadow-md border border-slate-700/50"
+                    onClick={(e) => { e.stopPropagation(); onDelete(sound.id); }}
+                    className="p-2 bg-slate-900/80 hover:bg-red-500/20 rounded-full cursor-pointer text-slate-400 hover:text-red-400 backdrop-blur-md transition-colors shadow-md border border-slate-700/50"
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-3.5 h-3.5">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
-                    </svg>
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>
                   </button>
                 )}
               </div>
@@ -481,216 +341,146 @@
         );
       };
 
+      // --- Recorder Component ---
       const Recorder = ({ onRecordingComplete }) => {
         const [isRecording, setIsRecording] = useState(false);
-        const [recordingTime, setRecordingTime] = useState(0);
-        const mediaRecorderRef = useRef(null);
+        const [time, setTime] = useState(0);
+        const mediaRef = useRef(null);
         const chunksRef = useRef([]);
         const timerRef = useRef(null);
 
-        const startRecording = async () => {
-          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            alert("Microphone access is not supported. Please ensure you are using HTTPS or localhost.");
-            return;
-          }
-
+        const start = async () => {
+          if (!navigator.mediaDevices) return alert("Mic not supported");
           try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             
-            // Critical for iOS: Prefer mp4/aac. 
-            // If we default to webm, iOS might record it but fail to play it back reliably from a Blob
-            let mimeType = 'audio/webm';
-            if (MediaRecorder.isTypeSupported('audio/mp4')) {
-              mimeType = 'audio/mp4';
-            } else if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-              mimeType = 'audio/webm;codecs=opus';
-            }
+            // iOS COMPATIBILITY: Prefer mp4/aac. WebM often fails to play back on iOS from Blobs.
+            let mime = 'audio/webm';
+            if (MediaRecorder.isTypeSupported('audio/mp4')) mime = 'audio/mp4';
+            else if (MediaRecorder.isTypeSupported('audio/aac')) mime = 'audio/aac';
             
-            mediaRecorderRef.current = new MediaRecorder(stream, { mimeType });
+            const recorder = new MediaRecorder(stream, { mimeType: mime });
+            mediaRef.current = recorder;
             chunksRef.current = [];
 
-            mediaRecorderRef.current.ondataavailable = (e) => {
-              if (e.data.size > 0) chunksRef.current.push(e.data);
-            };
-
-            mediaRecorderRef.current.onstop = () => {
-              const capturedMimeType = mediaRecorderRef.current?.mimeType || mimeType; 
-              const blob = new Blob(chunksRef.current, { type: capturedMimeType });
-              const url = URL.createObjectURL(blob); // Temp URL for immediate feedback
-              const name = `Rec ${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}`;
-              
-              // Pass the BLOB so it can be stored in DB
-              onRecordingComplete(url, name, blob); 
-              
-              stream.getTracks().forEach(track => track.stop());
-            };
-
-            mediaRecorderRef.current.start();
-            setIsRecording(true);
-            setRecordingTime(0);
+            recorder.ondataavailable = e => { if(e.data.size > 0) chunksRef.current.push(e.data); };
             
-            timerRef.current = window.setInterval(() => {
-              setRecordingTime(prev => prev + 1);
-            }, 1000);
+            recorder.onstop = () => {
+              const type = recorder.mimeType || mime; 
+              const blob = new Blob(chunksRef.current, { type });
+              // Create temp URL
+              const url = URL.createObjectURL(blob);
+              const name = `Rec ${new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;
+              onRecordingComplete(url, name, blob);
+              stream.getTracks().forEach(t => t.stop());
+            };
 
-          } catch (err) {
-            console.error("Error accessing microphone:", err);
-            alert("Could not access microphone.");
+            recorder.start();
+            setIsRecording(true);
+            setTime(0);
+            timerRef.current = setInterval(() => setTime(t => t+1), 1000);
+          } catch(e) {
+            console.error(e);
+            alert("Mic access denied");
           }
         };
 
-        const stopRecording = () => {
-          if (mediaRecorderRef.current && isRecording) {
-            mediaRecorderRef.current.stop();
+        const stop = () => {
+          if (mediaRef.current && isRecording) {
+            mediaRef.current.stop();
             setIsRecording(false);
-            if (timerRef.current) {
-              clearInterval(timerRef.current);
-              timerRef.current = null;
-            }
+            clearInterval(timerRef.current);
           }
         };
 
-        useEffect(() => {
-          return () => {
-            if (timerRef.current) clearInterval(timerRef.current);
-          };
-        }, []);
+        useEffect(() => () => clearInterval(timerRef.current), []);
 
         return (
-          <div className="flex flex-col items-center gap-2">
-            <button
-              onClick={isRecording ? stopRecording : startRecording}
-              className={`
-                flex items-center gap-3 px-6 py-3 rounded-full font-bold tracking-wider uppercase transition-all
-                ${isRecording 
-                  ? 'bg-red-500/20 border-2 border-red-500 text-red-400 animate-pulse shadow-[0_0_20px_rgba(239,68,68,0.4)]' 
-                  : 'bg-slate-800 border border-slate-700 hover:bg-slate-700 hover:border-cyan-400 text-slate-300 hover:text-cyan-400'
-                }
-              `}
-            >
-              {isRecording ? (
-                  <>
-                    <span className="w-3 h-3 rounded-full bg-red-500"></span>
-                    Stop ({recordingTime}s)
-                  </>
-              ) : (
-                  <>
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" />
-                    </svg>
-                    Record
-                  </>
-              )}
-            </button>
-          </div>
+          <button onClick={isRecording ? stop : start} className={`flex items-center gap-2 px-6 py-3 rounded-full font-bold uppercase transition-all ${isRecording ? 'bg-red-500/20 text-red-400 border border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.4)] animate-pulse' : 'bg-slate-800 border border-slate-700 text-slate-300 hover:text-cyan-400 hover:border-cyan-400'}`}>
+            {isRecording ? <><span className="w-2 h-2 rounded-full bg-red-500" /> STOP ({time}s)</> : <><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" /></svg> RECORD</>}
+          </button>
         );
       };
 
+      // --- Uploader Component ---
       const Uploader = ({ onUpload }) => {
-        const fileInputRef = useRef(null);
-
-        const handleFileChange = (e) => {
+        const inputRef = useRef(null);
+        const handleChange = (e) => {
           const file = e.target.files?.[0];
           if (file) {
             const url = URL.createObjectURL(file);
             const name = file.name.replace(/\.[^/.]+$/, "").substring(0, 12);
-            onUpload(url, name, file); // Pass raw file object
-            if (fileInputRef.current) fileInputRef.current.value = '';
+            onUpload(url, name, file);
+            if (inputRef.current) inputRef.current.value = '';
           }
         };
-
         return (
-          <div className="flex flex-col items-center">
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleFileChange}
-              accept="audio/*"
-              className="hidden"
-            />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              className="flex items-center gap-3 px-6 py-3 rounded-full font-bold tracking-wider uppercase bg-slate-800 border border-slate-700 hover:bg-slate-700 hover:border-fuchsia-400 text-slate-300 hover:text-fuchsia-400 transition-all"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
-              </svg>
-              Upload
+          <>
+            <input type="file" ref={inputRef} onChange={handleChange} accept="audio/*" className="hidden" />
+            <button onClick={() => inputRef.current?.click()} className="flex items-center gap-2 px-6 py-3 rounded-full font-bold uppercase bg-slate-800 border border-slate-700 text-slate-300 hover:text-fuchsia-400 hover:border-fuchsia-400 transition-all">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" /></svg>
+              UPLOAD
             </button>
-          </div>
+          </>
         );
       };
 
+      // --- App Component ---
       const App = () => {
         const [sounds, setSounds] = useState(PRELOADED_SOUNDS);
         const [stopSignal, setStopSignal] = useState(0);
 
-        // Load sounds from DB on mount
+        // Initial Load
         useEffect(() => {
-          getSoundsFromDB().then(customSounds => {
-             setSounds([...PRELOADED_SOUNDS, ...customSounds]);
+          getSoundsFromDB().then(custom => {
+            setSounds([...PRELOADED_SOUNDS, ...custom]);
           });
         }, []);
 
-        const handleAddSound = async (tempUrl, name, type, blob) => {
-          const newId = `custom-${Date.now()}`;
-          
+        const handleAdd = async (url, name, blob, type) => {
           const newSound = {
-            id: newId,
-            name: name || 'Custom Sound',
-            url: tempUrl, // Temporary URL for immediate feedback
+            id: `custom-${Date.now()}`,
+            name: name || 'Custom',
+            url,
             type,
             color: type === SoundType.RECORDED ? 'red' : 'blue',
-            blob: blob // Store blob in state for now, will be saved to DB
+            blob
           };
           
-          // Save the entire sound object (including blob) to DB
-          if (blob) {
-            await saveSoundToDB(newSound);
-          }
-          
+          await saveSoundToDB(newSound);
           setSounds(prev => [...prev, newSound]);
         };
 
-        const handleDeleteSound = async (id) => {
+        const handleDelete = async (id) => {
            await deleteSoundFromDB(id);
            setSounds(prev => {
-             const sound = prev.find(s => s.id === id);
-             if (sound && sound.url && sound.url.startsWith('blob:')) {
-               URL.revokeObjectURL(sound.url);
+             const found = prev.find(s => s.id === id);
+             if (found && found.url && found.url.startsWith('blob:')) {
+               URL.revokeObjectURL(found.url);
              }
              return prev.filter(s => s.id !== id);
            });
         };
 
-        const handleRenameSound = async (id, newName) => {
+        const handleRename = async (id, newName) => {
           await updateSoundNameInDB(id, newName);
-          setSounds(prev => prev.map(sound => 
-            sound.id === id ? { ...sound, name: newName } : sound
-          ));
-        };
-
-        const handleStopAll = () => {
-          setStopSignal(Date.now());
+          setSounds(prev => prev.map(s => s.id === id ? { ...s, name: newName } : s));
         };
 
         return (
-          <div className="min-h-screen bg-slate-950 text-slate-200 selection:bg-cyan-500/30 selection:text-cyan-200 overflow-x-hidden">
-            
-            <div className="fixed inset-0 z-0 pointer-events-none overflow-hidden">
+          <div className="min-h-screen bg-slate-950 text-slate-200 overflow-x-hidden">
+            {/* Background */}
+            <div className="fixed inset-0 z-0 pointer-events-none">
               <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-cyan-500/5 rounded-full blur-[120px]"></div>
               <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-fuchsia-500/5 rounded-full blur-[120px]"></div>
             </div>
 
             <div className="relative z-10 max-w-6xl mx-auto px-4 py-8 flex flex-col min-h-screen">
-              
               <header className="mb-10 text-center space-y-2">
                 <h1 className="text-5xl md:text-7xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-white to-fuchsia-400 drop-shadow-[0_0_10px_rgba(34,211,238,0.5)]">
                   GRAYS NOISE
                 </h1>
-                <p className="text-slate-400 font-light tracking-[0.2em] text-sm md:text-base uppercase">
-                  Futuristic Audio Interface v1.0
-                </p>
+                <p className="text-slate-400 font-light tracking-[0.2em] text-sm md:text-base uppercase">Futuristic Audio Interface v1.0</p>
               </header>
 
               <main className="flex-grow pb-32">
@@ -706,44 +496,27 @@
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 md:gap-6">
                     {sounds.map(sound => (
                       <SoundButton 
-                        key={sound.id} 
+                        key={sound.url || sound.id} /* FORCE RE-RENDER ON URL CHANGE */
                         sound={sound} 
                         stopSignal={stopSignal}
-                        onDelete={sound.type !== SoundType.PRELOADED ? handleDeleteSound : undefined} 
-                        onRename={sound.type !== SoundType.PRELOADED ? handleRenameSound : undefined}
+                        onDelete={sound.type !== SoundType.PRELOADED ? handleDelete : undefined} 
+                        onRename={sound.type !== SoundType.PRELOADED ? handleRename : undefined}
                       />
                     ))}
-                    
-                    {sounds.length === 0 && (
-                      <div className="col-span-full h-40 flex items-center justify-center text-slate-600 border-2 border-dashed border-slate-800 rounded-xl">
-                        No sounds active
-                      </div>
-                    )}
                   </div>
                 </div>
               </main>
 
               <footer className="fixed bottom-8 left-0 right-0 z-50 flex justify-center px-4 pointer-events-none">
-                 <div className="glass-panel p-3 sm:p-4 rounded-full shadow-[0_0_50px_-10px_rgba(0,0,0,0.6)] border border-slate-700/50 flex items-center gap-2 sm:gap-6 pointer-events-auto bg-slate-900/90 backdrop-blur-xl transition-transform hover:scale-[1.02]">
-                   
-                   <Recorder onRecordingComplete={(url, name, blob) => handleAddSound(url, name, SoundType.RECORDED, blob)} />
-                   
+                 <div className="glass-panel p-2 sm:p-3 rounded-full shadow-2xl flex items-center gap-2 sm:gap-4 pointer-events-auto bg-slate-900/95 backdrop-blur-xl">
+                   <Recorder onRecordingComplete={(url, name, blob) => handleAdd(url, name, blob, SoundType.RECORDED)} />
                    <div className="w-px h-8 bg-slate-700/50 hidden sm:block"></div>
-                   
-                   <button
-                     onClick={handleStopAll}
-                     className="flex items-center gap-2 sm:gap-3 px-4 sm:px-6 py-3 rounded-full font-bold tracking-wider uppercase bg-red-500/10 border border-red-500/50 hover:bg-red-500/20 text-red-400 hover:text-red-300 transition-all active:scale-95 whitespace-nowrap"
-                   >
-                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
-                       <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 7.5A2.25 2.25 0 017.5 5.25h9a2.25 2.25 0 012.25 2.25v9a2.25 2.25 0 01-2.25 2.25h-9a2.25 2.25 0 01-2.25-2.25v-9z" />
-                     </svg>
+                   <button onClick={() => setStopSignal(Date.now())} className="flex items-center gap-2 px-4 sm:px-6 py-3 rounded-full font-bold uppercase bg-red-500/10 border border-red-500/50 text-red-400 hover:bg-red-500/20 whitespace-nowrap">
+                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5.25 7.5A2.25 2.25 0 017.5 5.25h9a2.25 2.25 0 012.25 2.25v9a2.25 2.25 0 01-2.25 2.25h-9a2.25 2.25 0 01-2.25-2.25v-9z" /></svg>
                      <span className="hidden sm:inline">Stop All</span>
-                     <span className="sm:hidden">Stop</span>
                    </button>
-
                    <div className="w-px h-8 bg-slate-700/50 hidden sm:block"></div>
-                   
-                   <Uploader onUpload={(url, name, blob) => handleAddSound(url, name, SoundType.UPLOADED, blob)} />
+                   <Uploader onUpload={(url, name, blob) => handleAdd(url, name, blob, SoundType.UPLOADED)} />
                  </div>
               </footer>
               
@@ -757,4 +530,3 @@
     </script>
   </body>
 </html>
-    
