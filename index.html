@@ -386,7 +386,17 @@
 
         return (
           <div className="relative group no-select z-0">
-            <audio ref={audioRef} src={sound.url} preload="auto" playsInline />
+            {/* 
+              Use `key={sound.url}` to force React to remount the audio element 
+              when the URL changes (e.g., from DB reload). This fixes iOS stale audio issues.
+            */}
+            <audio 
+              key={sound.url} 
+              ref={audioRef} 
+              src={sound.url} 
+              preload="auto" 
+              playsInline 
+            />
             
             <button
               onClick={playSound}
@@ -464,10 +474,9 @@
                     onClick={(e) => {
                       e.stopPropagation();
                       e.preventDefault();
-                      // Removed double confirmation here. Let parent handle it.
                       onDelete(sound.id);
                     }}
-                    className="p-1.5 bg-slate-900/60 hover:bg-red-500/20 rounded-full cursor-pointer text-slate-400 hover:text-red-400 backdrop-blur-md transition-colors shadow-md border border-slate-700/50"
+                    className="p-2 bg-slate-900/60 hover:bg-red-500/20 rounded-full cursor-pointer text-slate-400 hover:text-red-400 backdrop-blur-md transition-colors shadow-md border border-slate-700/50"
                     title="Delete"
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-3.5 h-3.5">
@@ -490,18 +499,21 @@
 
         const startRecording = async () => {
           if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            alert("Microphone access is not supported in this browser context (try Safari or Chrome over HTTPS).");
+            alert("Microphone access is not supported. Please ensure you are using HTTPS or localhost.");
             return;
           }
 
           try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             
-            let mimeType = 'audio/webm';
-            if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-              mimeType = 'audio/webm;codecs=opus';
-            } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+            // Prefer mp4/aac for iOS, then webm/opus
+            let mimeType = '';
+            if (MediaRecorder.isTypeSupported('audio/mp4')) {
               mimeType = 'audio/mp4';
+            } else if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+              mimeType = 'audio/webm;codecs=opus';
+            } else {
+               mimeType = 'audio/webm'; // Fallback
             }
             
             mediaRecorderRef.current = new MediaRecorder(stream, { mimeType });
@@ -533,7 +545,7 @@
 
           } catch (err) {
             console.error("Error accessing microphone:", err);
-            alert("Could not access microphone. Please ensure permissions are granted.");
+            alert("Could not access microphone.");
           }
         };
 
@@ -654,10 +666,9 @@
         };
 
         const handleDeleteSound = async (id) => {
-          if (confirm('Delete this sound permanently?')) {
-             await deleteSoundFromDB(id);
-             setSounds(prev => prev.filter(s => s.id !== id));
-          }
+           // Direct delete logic to fix issues with confirmations and state sync
+           await deleteSoundFromDB(id);
+           setSounds(prev => prev.filter(s => s.id !== id));
         };
 
         const handleRenameSound = async (id, newName) => {
